@@ -1,166 +1,145 @@
-import type { Request, Response } from "express";
-import { StatusCodes } from "http-status-codes";
-import { Prisma } from "../generated/prisma/client";
-import { acountCreation, activationAccount, connexion, emailConfirmed, getAllUsers, updatesAccount, userRegistration } from "../services/user.service";
-import { gestionErrors } from "../helpers/gestionErrors.helpers";
-import { clientInformationsSchema, codeSchema, filterSchema } from "../schema/user.schema";
-import z from "zod";
-import { prisma } from "../lib/prisma";
-import strict from "node:assert/strict";
+import type { Request, Response } from "express"
+import { creationAccountClient } from "../services/user.service"
+import { StatusCodes } from "http-status-codes"
+import { gestionErrors } from "../helpers/gestionErrors.helpers"
+import { prisma } from "../lib/prisma"
+import bcrypt from "bcrypt"
+import jwt from "jsonwebtoken"
+import type { MyData } from "../types/workers.types"
+import { mailerQueue } from "../workers/emailworker"
+import { mailValidationFunction } from "../htmlFunctions/mailConfirmation"
 
-//enregistrement d'un utilisateur client qui crée son espace dédié.
-export const userRegistrationController = async (req: Request, res: Response) => {
+export const creationClientAccountController = async (req: Request, res: Response) => {
   try {
-    const user = await userRegistration(req.body)
-    return res.status(StatusCodes.CREATED).json({success: true, user})
+    const user = await creationAccountClient(req.body)
+    console.log("etapefianleok")
+    return res.status(StatusCodes.CREATED).json({success: true, message: "Compte client bien créé.", user})
   } catch (error) {
-    if(error instanceof Prisma.PrismaClientKnownRequestError){
-      if(error.code === 'P2002'){
-        console.log("L'email est déjà utilisé.")
-        return res.status(StatusCodes.BAD_REQUEST).json({success: false, message: "Un email correspondant existe déjà."})
+    gestionErrors(error, res)
+  }
+}
+
+export const verifyTokenController = async(req: Request, res: Response) => {
+  try {
+    const {email ,token} = req.params
+    if(!email || typeof email !== "string"){
+      return res.status(StatusCodes.BAD_REQUEST).json({success: false, message: "Erreur: email"})
+    }
+    if(!token || typeof token !== "string"){
+      return res.status(StatusCodes.BAD_REQUEST).json({success: false, message: "Token absent."})
+    }
+
+    const now = new Date()
+    const userData = await prisma.user.findFirst({
+      where: {
+        email,
+        validate_user: false
+      },
+      select: {
+        id: true,
+        verify_token: true,
+        token_expires_at: true,
+        validate_user: true,
+        firstname: true,
+        lastname: true
       }
+    })
+
+    if(!userData){
+      return res.status(StatusCodes.BAD_REQUEST).json({success: false, message:"Compte utilisateur déjà existant."})
     }
-    gestionErrors(error, res)
-  }
-}
-//confirmation de l'adresse email
-export const emailConfirmation = async(req: Request, res: Response) => {
-  try {
-    const code = codeSchema.safeParse(req.body)
-    if(!code.success){
-      return res.status(StatusCodes.BAD_REQUEST).json({success: false, message: "Erreur dans le type du code", error: code.error})
+    if(userData.token_expires_at < now.toISOString()){
+      return res.status(StatusCodes.BAD_REQUEST).json({success: false, message:"Token expiré."})
     }
-    const {idRegistration} = req.params
-    await emailConfirmed(idRegistration as string, code.data)
-    return res.status(StatusCodes.OK).json({success: true, message: "Email confirmé."})
-  } catch (error) {
-    gestionErrors(error, res)
-  }
-}
-//création d'un utilisateur
-//Seul un admin ou un superadmin peut effectuer cette action
-export const userCreation = async(req:Request, res: Response) => {
-  try {
-    //id de l'enregistrement dans la requête 
-    const {idRegister} = req.params
-    const createdUser = await acountCreation(idRegister as string, req.body)
-    return res.status(StatusCodes.CREATED).json({success: true, createdUser})
-  } catch (error) {
-    gestionErrors(error, res)
-  }
-}
-//Connexion à un compte
-export const connexionAccount = async(req: Request, res: Response) => {
-  try {
-    const {email, pswd} = req.body
-    if(!email){
-      return res.status(StatusCodes.BAD_REQUEST).json({success: false, message: "Email manquant."})
-    }
-    const parsedEmail = z.email().safeParse(email)
-    if(!parsedEmail.success){
-      return res.status(StatusCodes.BAD_REQUEST).json({success: false, message: "Email incorrect."})
-    }
-    if(!pswd){
-      return res.status(StatusCodes.BAD_REQUEST).json({success: false, message: "Mot de passe manquant."})
+    const ok = await bcrypt.compare(userData.verify_token, token)
+    if(!ok){
+      return res.status(StatusCodes.BAD_REQUEST).json({success: false, message:"token non correspondant."})
     }
 
-    const connected = await connexion(parsedEmail.data, pswd)
-    res.cookie('token', connected.token, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: 'strict',
-      maxAge: 3600000
-    })
-    return res.status(StatusCodes.OK).json({success: true, user: connected.user})
-  } catch (error) {
-    gestionErrors(error, res)
-  }
-}
-//Activation d'un compte dont il faut un collaborateur pour un client, un admin pour un collaborateur, un superadmin pour un admin
-export const activation = async(req: Request, res: Response) => {
-  try {
-    const {idAccount} = req.params
-    const activatedAccount = await activationAccount(idAccount as string)
-    return res.status(StatusCodes.OK).json({success: true, activatedAccount})
-  } catch (error) {
-    if(error instanceof Prisma.PrismaClientUnknownRequestError){
-      return res.status(StatusCodes.BAD_REQUEST).json({success: false, message: "Aucun compte trouvé.", error: error.message})
-    }
-    gestionErrors(error, res)
-  }
-}
-//désactivation du compte client
-export const desactivation = async(req: Request, res: Response) => {
-  try {
-    const {idAccount} = req.params
-    const user = await prisma.user.update({
-      where:{id: idAccount as string},
+    const updatedUser = await prisma.user.update({
+      where: {
+        id: userData.id
+      },
       data: {
-        activate: false
+        verify_token: "",
+        validate_user: true
       }
     })
-    return res.status(StatusCodes.OK).json({success: true, user})
-  } catch (error) {
-    if(error instanceof Prisma.PrismaClientUnknownRequestError){
-      return res.status(StatusCodes.BAD_REQUEST).json({success: false, message: "Client correspondant à l'id non existant."})
+    const jobData: MyData = {
+      to: email,
+      subject: "Compte validé",
+      html: mailValidationFunction(userData.firstname, userData.lastname)
     }
-    return res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({success: false, message: "Erreur interne du serveur lors de désactivation du compte."})
-  }
-}
-//Changement des informations d'un utilisateur
-export const userUpdates = async(req: Request, res: Response) => {
-  try {
-    const i = clientInformationsSchema.safeParse(req.body)
-    if(!i.success){
-      return res.status(StatusCodes.BAD_REQUEST).json({success: false, message: "Erreur dans le type de données à update.", error: i.error})
-    }
-    req.body = i.data
-    const updatedUser = await updatesAccount(req.params.idAccount as string, req.body)
+    mailerQueue.add("Compte valide", jobData)
     return res.status(StatusCodes.OK).json({success: true, updatedUser})
   } catch (error) {
     gestionErrors(error, res)
   }
 }
-//avoir les informations sur un user
-export const getUser = async(req: Request, res: Response) => {
-  try {
-    const {idAccount} = req.params
-    const user = await prisma.user.findUnique({
-      where: {id: idAccount as string}
-    })
-    return res.status(StatusCodes.OK).json({success: true, user})
-  } catch (error) {
-    if(error instanceof Prisma.PrismaClientUnknownRequestError){
-      return res.status(StatusCodes.BAD_REQUEST).json({success: false, message: "Aucun compte associé à cet id."})
-    }
-    return res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({success: false, message: "Une erreur interne est survenue."})
-  }
-}
 
-export const getUsersWithFilters = async(req: Request, res: Response) => {
+export const login = async(req: Request, res: Response) => {
   try {
-    const filter = filterSchema.safeParse(req.query)
-    if(!filter.success){
-      return res.status(StatusCodes.BAD_REQUEST).json({success: false, message: "Erreur dans les querys.", error: filter.error})
+    const {email, pswd} = req.body
+    if(!email || typeof email === "string"){
+      return res.status(StatusCodes.BAD_REQUEST).json({success: false, message:"email incorrect ou manquant."})
     }
-    const users = await getAllUsers(filter.data)
-    return res.status(StatusCodes.OK).json({success: true, users})
+    if(!pswd || typeof pswd === "string"){
+      return res.status(StatusCodes.BAD_REQUEST).json({success: false, message:"type du mot de passe incorrect ou mot de passe manquant."})
+    }
+
+    const user = await prisma.user.findFirst({
+      where: {
+        email,
+        validate_user: true
+      },
+      select: {
+        id: true,
+        pswd: true,
+        role: true
+      }
+    })
+    if(!user){
+      return res.status(StatusCodes.NOT_FOUND).json({success: false, message: "Aucun compte client trouvé."})
+    }
+
+    const ok = await bcrypt.compare(user.pswd, pswd)
+    if(!ok){
+      return(res.status(StatusCodes.BAD_REQUEST).json({success: false, message: "Mot de passe incorrect."}))
+    }
+
+    const JWT_SECRET_KEY = process.env.JWT_SECRET
+    if(!JWT_SECRET_KEY){
+      return res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({success: false, message:"JWT_SECRET_KEY absente du fichier .env."})
+    }
+
+    const token = jwt.sign({
+      userId: user.id,
+      role: user.role
+    }, JWT_SECRET_KEY, {expiresIn: "24h"})
+
+    res.cookie('token', token, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production', 
+      sameSite: 'strict',
+      maxAge: 7 * 24 * 60 * 1000 
+    })
+
+    return res.status(StatusCodes.OK).json({success: true, message: "Connexion réussie."})
   } catch (error) {
     gestionErrors(error, res)
   }
 }
-//deconnection
-export const disconnexion = async(req: Request, res: Response) => {
+
+export const logout = async(req: Request, res: Response) => {
   try {
-    //à travers le middleware il est certains que la personne est connectée
     res.clearCookie('token', {
       httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: 'strict'
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'strict',
     })
 
-    return res.status(StatusCodes.OK).json({message: "Déconnexion réussie."})
+    return res.status(StatusCodes.OK).json({success: false, message: "Déconnexion réussie."})
   } catch (error) {
-    return res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({message: "Erreur interne du serveur lors de la déconnexion."})
+   gestionErrors(error, res) 
   }
-} 
+}

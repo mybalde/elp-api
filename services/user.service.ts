@@ -1,157 +1,66 @@
+//création du compte utilisateur et envoi du mail de confirmation de l'adresse email
+
+import { BadRequestError } from "../helpers/gestionErrors.helpers";
 import { prisma } from "../lib/prisma";
-import type { clientInfoType, connexionType, filterType, userRegistrationType } from "../schema/user.schema";
+import type { createUserAccountType } from "../schema/user.schema";
 import bcrypt from "bcrypt"
-import crypto from 'crypto'
-import * as jwt from 'jsonwebtoken'
-import { BadRequestError, KnownUserError, UnknownUserError } from "../helpers/gestionErrors.helpers";
-import type { UserType } from "../generated/prisma/enums";
-import { filterFunction } from "../interfaces/FilterInterface";
+import { mailerQueue } from "../workers/emailworker";
+import type { MyData } from "../types/workers.types";
+import { mailConfirmationFunction } from "../htmlFunctions/mailConfirmation";
 
+export const creationAccountClient = async (data: createUserAccountType) => {
+  const {email, pswd, confirmPswd, ...userData } = data
 
-export const userRegistration = async (data: userRegistrationType) => {
-  const {email, name, pswd, confirmpswd} = data
-
-  const userRegistrated = await prisma.userRegistration.findFirst({
-    where: {email}
-  })
-  if(userRegistrated){
-    throw new KnownUserError("Cet email est objet d'une demande d'enregistrement.")
-  }
-
-  const createdUser = await prisma.user.findFirst({
-    where: {email}
-  })
-  if(createdUser){
-    throw new KnownUserError("Cet email est déjà associé à un compte existant.")
-  }
-
-  if(pswd!==confirmpswd){
-    throw new BadRequestError("Le mot de passe et sa confirmation ne correspondent pas.")
-  }
-  
-  const saltRounds = 10
-  const hashedPswd = await bcrypt.hash(pswd, saltRounds)
-
-  const code = crypto.randomInt(1000000, 999999)
-  const u = prisma.userRegistration.create({
-    data: {
+  console.log("etape 3 ok")
+  const userCreated = await prisma.user.findFirst({
+    where:{
       email,
-      name,
-      pswd: hashedPswd,
-      code
+      validate_user: true
+    }
+  })
+  console.log("etape 3 ok")
+
+  if(userCreated){
+     throw new BadRequestError("Un compte utilisteur est déjà associé à ces informations.")
+  }
+
+  const now = new Date()
+  const user = await prisma.user.findFirst({
+    where: {
+      email,
+      token_expires_at: {gte: now.toISOString()}
     }
   })
 
-  //envoi de l'email avec le code de confirmation
-
-  return u
-}
-
-export const emailConfirmed = async(id: string, enteredCode: number) => {
-  const u = await prisma.userRegistration.findUnique({
-    where: {id},
-    select: { code: true }
-  })
-
-  if(!u){
-    throw new Error("Aucun enregistrement correspondant à cette id trouvé.")
+  console.log("etape 4 ok")
+  if(user){
+    throw new BadRequestError("L'email est en attente de confirmation")
   }
-  if(u.code!==enteredCode){
-    throw new Error("Code incorrect.")
+  if(pswd !== confirmPswd){
+    throw new BadRequestError("Le mot de passe et la confirmation du mot de passe ne sont pas les même.")
   }
 
-  //envoi d'un email de demande de création de l'espace bien pris en compte
+  const hash = await bcrypt.hash(pswd, 13)
+  const verify_token = crypto.randomUUID()
+  const hashed_token = await bcrypt.hash(verify_token, 13)
+  const token_expires_at = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString()
 
-  return await prisma.userRegistration.update({
-    where: {id},
-    data: {
-      confirmedEmail: true
-    }
-  })
-}
-
-export const acountCreation = async(idRegistration: string, role: UserType) => {
-  const u = await prisma.userRegistration.findUnique({
-    where: {id: idRegistration}
-  })
-
-  if(!u){
-    throw new UnknownUserError("Aucun enregistrement correspondant à cette id trouvé. Impossible de procéder à la création du compte.")
-  }
-  const {name, email, pswd} = u
   const createdUser = await prisma.user.create({
-    data:{
+    data: {
+      ...userData,
       email,
-      name,
-      pswd,
-      role
+      pswd: hash,
+      verify_token: hashed_token,
+      token_expires_at,
     }
   })
 
-  await prisma.userRegistration.update({
-    where: {id: idRegistration},
-    data: {
-      confirmedCreation: true
-    }
-  })
+  const jobData: MyData = {
+    to: email,
+    subject: "Confimation email",
+    html: mailConfirmationFunction(email,verify_token)
+  }
+  mailerQueue.add("Verification email", jobData)
 
   return createdUser
-}
-
-export const connexion = async(email: string, pswd: string) => {
-  const user = await prisma.user.findUnique({
-    where: {email}
-  })
-
-  if(!user){
-    throw new Error("Aucun utiliateur correspondant à cette adresse email trouvé.")
-  }
-
-  const result = await bcrypt.compare(pswd, user.pswd)
-  if(!result){
-    throw new Error("Impossible d'accéder à l'espace client, mot de passe incorrect.")
-  }
-
-  const SECRET = process.env.JWT_SECRET
-  if(!SECRET){
-    throw new Error("Aucune clé secrète dans .env.")
-  }
-  const token = jwt.sign(
-    {userId: user.id, role: user.role},
-    SECRET,
-    {expiresIn: '1h'}
-  )
-
-  return {token, user}
-}
-
-export const activationAccount = async(id: string) => {
-  return prisma.user.update({
-    where: {id},
-    data: {
-      activate: true
-    }
-  })
-}
-
-export const updatesAccount = async(id: string, data: clientInfoType) => {
-  const user = await prisma.user.findUnique({
-    where: {id}
-  })
-  if(!user){
-    throw new UnknownUserError("Aucun compte lié à cet id.")
-  }
-
-  return await prisma.user.update({
-    where: {id},
-    data: {data}
-  })
-}
-
-export const getAllUsers = async(filter: filterType) => {
-  const paramsFilter = filterFunction(filter)
-  const accounts = await prisma.user.findMany({
-    where: paramsFilter
-  })
-  return accounts
 }

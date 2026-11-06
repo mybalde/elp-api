@@ -13,17 +13,14 @@ export interface MyPayload extends jwt.JwtPayload {
 export const handleUserRegistration = (Schema: ZodType) => {
   return (req: Request, res: Response, next: NextFunction) => {
     const result = Schema.safeParse(req.body)
+    console.log("parse ok")
     if(!result.success){
       console.log(result.error.message)
-      return res.status(StatusCodes.BAD_REQUEST).json({success: false, message: "Un ou plusieurs champs manquent ou contiennent des erreurs.",
-        errors: result.error.issues.map((issue) => {
-          field: issue.path
-          type: issue.code
-          message: issue.message
-        })})
+      return res.status(StatusCodes.BAD_REQUEST).json({success: false, message: "Un ou plusieurs champs manquent ou contiennent des erreurs."})
     }
 
     req.body = result.data
+    console.log("etape2 ok")
     next()
   }
 }
@@ -60,4 +57,12 @@ export const requireCollaborators = (req: Request, res: Response, next: NextFunc
     return res.status(StatusCodes.BAD_REQUEST).json({success: false, message: "Le user connectté n'est celui qui effectue l'action. Error dans les params de l'url."})
   }
   next()
+}
+
+export const requiredClientIdParams = (req:  Request, res: Response, next: NextFunction) => {
+  if(!req.params || typeof req.params!=="string"){
+    return res.status(StatusCodes.BAD_REQUEST).json({success: false, message: "Type de clientId incorrect ou absent dans les query params."})
+  }
+
+  return next()
 }

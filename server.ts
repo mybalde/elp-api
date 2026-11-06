@@ -1,6 +1,6 @@
 import dotenv from "dotenv"
 dotenv.config()
-import express from "express"
+import express, { type Request } from "express"
 import bodyParser from "body-parser"
 import cookieParser from "cookie-parser"
 import swaggerJsdoc from "swagger-jsdoc"
@@ -17,13 +17,13 @@ app.use(cookieParser())
 app.use(bodyParser.json())
 app.use(bodyParser.urlencoded({ extended: true}))
 
-const options = { 
+/*const options = { 
   definition : { 
     openapi : "3.1.0" , 
     info : { 
       title : "Mon API Express avec Swagger" , 
       version : "0.1.0" , 
-      description : "Il s'agit d'une application API réalisée avec Express et documentée avec Swagger" , 
+      description : "Il s'agit d'une API réalisée avec Express et documentée avec Swagger" , 
     }, 
     servers : [ 
       {
@@ -38,7 +38,7 @@ const specs = swaggerJsdoc(options)
 app.use("/api-docs",
   swaggerUi.serve,
   swaggerUi.setup(specs)
-)
+)*/
 
 //Définitions des routes
 app.use("/api/users", usersRoutes)

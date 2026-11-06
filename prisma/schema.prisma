@@ -12,30 +12,170 @@ datasource db {
   provider = "postgresql"
 }
 
-enum UserType{
-  CLIENT
-  COLLABORATOR
-  ADMIN
+Cabinet compatble : modèles 
+Cabinet qui compte des clients, des collaborateurs et un admin. 
+chaque collaborateur gère un dossier client, 
+l'admin assigne un nombre de dossiers à un collaborateur
+un utilisateur de la plateforme qui peut être soit un client un collaborateur ou un admin, pour se connecté.
+-le Client: deux types de clients
+les professionnels et les compagnies
+Contient : 
+des pièces à déposer, avec un avancement, un statut, une AccountingAccount.
+une liste de base des informations personnels du client puis en fonction du type de client il y a 
+une liste de pièces qui seront demandées par le cabinet. 
+statut visible du dossier avec les pièces et le statut de chaque pièce. Une liste des pièces demandées par le cabinet
+Module B: le collaborateur
+a une fiche de clients, ou il clique dessus et a les informations de chaque client et peut les gérer
+des relances automatiques lorsque il y a des dossiers demandées et qui n'ont pas été mis par le client. des relances paramétrables par le cabinet
+classement des pièces par exercice et par catégorie. chaque pièce a une catégorie.
+affectation des  pièces dans les comptes comptables avec la validation du collaborateur
+
+enum UserRoles {
+  CLIENT,
+  COLLABORATOR, //compte créé par l'admin
+  ADMIN, 
   SUPERADMIN
 }
-//Un utilisateur a une id,  email, un nom, un mot de passe, un numéro de teléphone, un type, 
-model User {
-  id        String @id @default(uuid())
-  email     String @unique
-  name      String 
-  tel       String?
-  pswd      String
-  role      UserType
-  activate  Boolean @default(true)
+
+enum ClientType {
+  COMPANY, //sarl, sasu, auto, etc
+  PROFESSIONAL // taxi, vtc, artisans
 }
 
-//demande d'enregistrement d'un utilisateur
-model UserRegistration {
-  id        String @id @default(uuid())
-  email     String @unique
-  name      String
-  pswd            String
-  code           Int
-  confirmedEmail Boolean @default(false)
-  confirmedCreation Boolean @default(false) 
+enum LegalForm {
+  SASU,
+  MICRO-ENTREPRISE,
+  ENTREPRISE-INDIVIDUELLE
 }
+
+enum CompanyStatus {
+  ACTIVE,
+  SUSPENDED,
+  CLOSED
+}
+
+model Cabinet {
+  id_cabinet    String @id @default(uuid())
+  name                  String
+  siret                 String?  @unique
+  email                 String?
+  phone                 String?
+  address               String?
+  logoUrl               String? // identité visuelle reprise dans l'espace client et les PDF
+  primaryColor          String?  @default("#1F3A5F")
+  reminderEveryDays     Int      @default(5) // fréquence paramétrable des relances
+  reminderMaxCount      Int      @default(3)
+  inactivityThresholdDays Int    @default(60)
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  users   User[]
+  @@map("cabinets")
+  @@index([id_cabinet, name])
+}
+
+model User {
+  id_user   String @id @default(uuid())
+  cabinetId   String @unique 
+  firstname   String
+  lastname    String
+  email   String @unique
+  phone   String @unique
+  hashpswd  String
+  role      UserRoles @default(CLIENT)
+
+  clientId    String?
+  client      Client? @relations(fields:[clientId], references:[id_client])
+  collaboratorId    String?
+  collaborator      Collaborator?  @relations:(fields:[collaboratorId], references:[id_collaborator])
+
+  verify_token String
+  token_expires_at  DateTime
+  validate    Boolean
+  isActive Boolean
+  lastActivity DateTime
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+//en fonction du client on a un type de dossier. 
+//chaque client a un dossier personnel ou il y a toutes les informations personnels du client 
+//et un dossier administratif
+model Client{
+  id_client   String @id @default(uuid())
+
+  cabinetId   String
+  cabinet     Cabinet @relation(fields:[cabinetId], references:[id_cabinet], onDelete: Cascade)
+
+  type        ClientType
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("clients")
+  @index([id_client])
+}
+
+model Personal {
+  id_p    String @id @default(uuid())
+
+  clientId  String 
+  client    Client  @relation(fields:[clientId], references:[id_client], onDelete: Cascade)
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  identityCardKey   String?
+  passportKey       String?
+  residencePermitKey String?
+  drivingLicensesKey   String
+  domicileKey   String?
+  ribKey    String?
+  vitalKey    String?
+
+  @@map("Dossiers personnels")
+  @index([id_p, clientId])
+}
+
+model Company {
+  id_comapny    String @id @default(uuid)
+
+  name    String @unique
+  tradeName   String? @unique //nom commercial
+  legalForm   String //forme juridique
+  siren   String? @unique //numéro de siren
+  siret   String? @unique //numéro de siret
+  apeCode   String? //code ape ou naf
+
+  creationDate    DateTime? //date de création
+
+  activity    String //secteur d'activité
+  shareCapital    Decimal? @db.Decimal(10,2) //capital social (selon le statut)
+  vatNumber   String? //numéro de tvaa intracommunautaire (si concerné)
+
+  address   String?
+  addressComplement   String?
+  postalCode    String?
+  city    String?
+  country   String? @default("france")
+  phone   String?
+  email   String?
+  website   String?
+
+  taxRegime   String?
+  vatRegime   String?
+  socialRegime    String?
+  socialOrganization    String?
+  accountingClosingDate   String?
+  status    CompanyStatus
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+model Professional {}
+model CompanyDocument{}
+model ProfessionalDocument{}
+
+model Collaborator{}
+
